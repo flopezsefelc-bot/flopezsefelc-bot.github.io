@@ -689,13 +689,13 @@ window.CONECTA_SUPABASE_KEY="sb_publishable_NE-U675MSTjWuT66TSzZMw_WzRuU2GN";
 <body>
 <div id="conectaAuthGate" style="display:none;position:fixed;inset:0;z-index:100000;background:rgba(8,28,48,.72);backdrop-filter:blur(3px);align-items:center;justify-content:center;padding:20px;box-sizing:border-box;">
   <div style="width:min(430px,100%);background:#fff;border-radius:16px;box-shadow:0 18px 60px rgba(0,0,0,.25);padding:28px;box-sizing:border-box;">
-    <div style="font-size:25px;font-weight:800;color:#17324d;margin-bottom:6px">Conecta — Visor de Sustentos</div>
-    <div style="font-size:13px;color:#68788c;line-height:1.5;margin-bottom:18px">Ingresa con tu correo. Te enviaremos un enlace de acceso. El VISOR no permite modificar la base principal.</div>
-    <label style="display:block;font-size:13px;font-weight:700;color:#17324d;margin-bottom:6px">Correo electrónico</label>
-    <input id="conectaAuthEmail" type="email" placeholder="nombre@correo.com" autocomplete="email" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
-    <button id="conectaAuthSend" type="button" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:9px;background:#123b5d;color:#fff;font-weight:800;cursor:pointer">Ingresar al VISOR</button>
+    <div style="font-size:25px;font-weight:800;color:#17324d;margin-bottom:6px">Conecta — Acceso seguro</div>
+    <div style="font-size:13px;color:#68788c;line-height:1.5;margin-bottom:18px">Ingresa con tu usuario y contraseña. El acceso se asigna como <strong>ADMINISTRADOR</strong> o <strong>VISOR</strong>.</div>
+    <label style="display:block;font-size:13px;font-weight:700;color:#17324d;margin-bottom:6px">Usuario / correo electrónico</label>
+    <input id="conectaAuthEmail" type="email" placeholder="usuario@correo.com" autocomplete="username" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
     <label style="display:block;font-size:13px;font-weight:700;color:#17324d;margin:12px 0 6px">Contraseña</label>
-<input id="conectaAuthPassword" type="password" placeholder="Ingresa tu contraseña" autocomplete="current-password" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
+    <input id="conectaAuthPassword" type="password" placeholder="Ingresa tu contraseña" autocomplete="current-password" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
+    <button id="conectaAuthSend" type="button" style="width:100%;margin-top:14px;padding:12px;border:0;border-radius:9px;background:#123b5d;color:#fff;font-weight:800;cursor:pointer">Ingresar al sistema</button>
     <div id="conectaAuthStatus" style="font-size:12px;color:#68788c;margin-top:12px;min-height:18px"></div>
   </div>
 </div>
@@ -2101,8 +2101,8 @@ async function loadFile(file){
    uploadStatus.textContent='Leyendo '+file.name+'...';
    if(!window.XLSX) throw new Error('No se pudo cargar el lector de Excel. Abre el dashboard con conexión a internet la primera vez.');
    const parsed=await parseWorkbook(file);
-   const mapped=parsed.rows.map(mapUploadRow).filter(Boolean);
-   if(!mapped.length) throw new Error('No encontré filas válidas. Usa la plantilla de BASE CONSOLIDADA.');
+   const mapped=parsed.rows.map(mapUploadRow).filter(Boolean).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
+   if(!mapped.length) throw new Error('No encontré filas válidas de 2026. Los registros 2027 se excluyen automáticamente.');
    const subConDato=mapped.filter(x=>String(x.subAgrupacion||'').trim()).length;
    if(!subConDato) throw new Error('El archivo no trae información en la columna D (Sub Agrupacion por estado). Verifica que la columna D tenga los datos antes de cargarlo.');
    const existing=await dbGetAll();
@@ -2136,10 +2136,21 @@ async function loadFile(file){
    }
    const finalRows=[...existingMap.values()];
    if(finalRows.length) await dbPutRows(finalRows);
-   DATA=finalRows.map(({_id,...x})=>x);
+   DATA=finalRows.map(({_id,...x})=>x).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
    refreshCascadingOptions(); render();
    uploadStatus.textContent=`${nuevos} registros nuevos agregados · ${actualizados} registros actualizados · ${repetidos} sin cambios · ${mapped.length} leídos · ${subConDato} con Sub Agrupación de columna D`;
-   document.getElementById('lastUpdate').textContent='Base alimentada: '+new Date().toLocaleString('es-PE');
+   document.getElementById('lastUpdate').textContent='Base cargada en ADMIN: '+new Date().toLocaleString('es-PE');
+   if(window.ConectaSupabase?.getProfile?.()?.role==='admin'){
+     try{
+       uploadStatus.textContent+=' · Publicando para VISOR...';
+       const pub=await window.ConectaSupabase.publishDashboard();
+       uploadStatus.textContent+=` ✓ VISOR actualizado (${pub.count} registros)`;
+     }catch(syncErr){
+       console.error(syncErr);
+       uploadStatus.textContent+=' · ⚠ No se pudo publicar al VISOR: '+(syncErr.message||syncErr);
+       alert('La base quedó cargada en ADMIN, pero no se pudo publicar al VISOR. Verifica la tabla dashboard_state en Supabase.\n\n'+(syncErr.message||syncErr));
+     }
+   }
  }catch(err){console.error(err);uploadStatus.textContent='Error: '+err.message;alert(err.message);}
 }
 if(fileInput){
@@ -2642,74 +2653,187 @@ body.single-viewer.smart-page #smartSave{display:none!important}
   function status(msg,ok){
     const el=document.getElementById('conectaAuthStatus');
     if(el){el.textContent=msg||'';el.style.color=ok?'#236b3a':'#8a3030';}
-    if(window.ConectaSharedSync && window.ConectaSharedSync.setStatus) window.ConectaSharedSync.setStatus(msg,!!ok);
   }
   function profileStatus(){
     let el=document.getElementById('conectaProfileBadge');
-    if(!el){el=document.createElement('div');el.id='conectaProfileBadge';el.style.cssText='position:fixed;left:14px;bottom:14px;z-index:99998;background:#fff;border:1px solid #d7e0ea;border-radius:10px;padding:8px 11px;font:600 12px Segoe UI,Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.08);color:#36536f;max-width:360px;';document.body.appendChild(el);}
-    el.textContent=profile ? ('Usuario: '+(profile.email||'')+' · Tienda: '+(profile.store_code||'Sin asignar')) : '';
+    if(!el){el=document.createElement('div');el.id='conectaProfileBadge';el.style.cssText='position:fixed;left:14px;bottom:14px;z-index:99998;background:#fff;border:1px solid #d7e0ea;border-radius:10px;padding:8px 11px;font:600 12px Segoe UI,Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.08);color:#36536f;max-width:420px;';document.body.appendChild(el);}
+    el.textContent=profile ? ('Usuario: '+(profile.email||'')+' · Rol: '+(profile.role==='admin'?'ADMINISTRADOR':'VISOR')+(profile.store_code?' · Tienda: '+profile.store_code:'')) : '';
   }
-  async function sendLink(){
-    const input=document.getElementById('conectaAuthEmail'); const email=String(input?.value||'').trim();
-    if(!email){status('autocomplete="email".',false);return;}
+  function applyRole(){
+    const role=profile?.role==='admin'?'admin':'viewer';
+    document.body.dataset.conectaRole=role;
+    document.body.classList.toggle('role-admin',role==='admin');
+    document.body.classList.toggle('role-viewer',role==='viewer');
+  }
+  async function signIn(){
+    const email=String(document.getElementById('conectaAuthEmail')?.value||'').trim();
+    const password=String(document.getElementById('conectaAuthPassword')?.value||'');
+    if(!email || !password){status('Ingresa usuario y contraseña.',false);return;}
     const btn=document.getElementById('conectaAuthSend'); if(btn) btn.disabled=true;
-    status('Enviando enlace de acceso...',true);
+    status('Validando acceso...',true);
     try{
-      const {error}=await sb.auth.signInWithOtp({email,options:{emailRedirectTo:location.href.split('#')[0]}});
+      const {error}=await sb.auth.signInWithPassword({email,password});
       if(error) throw error;
-      status('Listo. Revisa tu correo y abre el enlace recibido.',true);
-    }catch(e){status('No se pudo enviar el enlace: '+(e.message||e),false);}
+      status('Acceso correcto. Cargando...',true);
+    }catch(e){status('Usuario o contraseña incorrectos: '+(e.message||e),false);}
     finally{if(btn)btn.disabled=false;}
   }
   async function loadProfile(){
     const {data:{user}}=await sb.auth.getUser();
-    if(!user){ profile=null; gate(true); return false; }
+    if(!user){ profile=null; applyRole(); gate(true); return false; }
     const {data,error}=await sb.from('profiles').select('id,email,role,store_code').eq('id',user.id).maybeSingle();
     if(error) throw error;
-    if(!data){ gate(false); profile=null; alert('Tu correo ya está autenticado, pero todavía no tiene una asignación de tienda en Conecta. El administrador debe registrar tu correo en Perfiles.'); return false; }
-    if(data.role!=='viewer' && data.role!=='admin'){ gate(false); profile=null; alert('Tu usuario no tiene un rol válido para este VISOR.'); return false; }
-    profile=data; gate(false); profileStatus(); return true;
+    if(!data){ await sb.auth.signOut(); profile=null; applyRole(); gate(true); status('El usuario existe, pero no está registrado en Perfiles.',false); return false; }
+    if(data.role!=='viewer' && data.role!=='admin'){ await sb.auth.signOut(); profile=null; applyRole(); gate(true); status('El usuario no tiene un rol válido. Use viewer o admin.',false); return false; }
+    profile=data; applyRole(); gate(false); profileStatus(); return true;
   }
   async function loadSustentos(){
-    if(!profile) return;
+    if(!profile || !profile.store_code) return;
     const {data,error}=await sb.from('sustentos').select('order_key,sustento,store_code,updated_at').eq('store_code',profile.store_code);
-    if(error) throw error;
+    if(error) return;
     const map=new Map((data||[]).map(r=>[String(r.order_key),r]));
     let changed=false;
-    DATA=(DATA||[]).map(x=>{
-      const r=map.get(String(x.key||''));
-      if(!r) return x;
-      const v=String(r.sustento||'');
-      if(String(x.sustentoTienda||'')!==v){changed=true;return {...x,sustentoTienda:v};}
-      return x;
-    });
+    DATA=(DATA||[]).map(x=>{const r=map.get(String(x.key||''));if(!r)return x;const v=String(r.sustento||'');if(String(x.sustentoTienda||'')!==v){changed=true;return {...x,sustentoTienda:v};}return x;});
     if(changed && typeof render==='function') render();
   }
   async function saveSustento(orderKey,value){
-    if(!profile) throw new Error('Usuario no autenticado.');
-    const v=String(value||'').trim();
-    if(!v) throw new Error('Ingrese el Sustento de Tienda antes de guardar.');
+    if(!profile || profile.role!=='admin') throw new Error('Solo el administrador puede guardar cambios.');
+    const v=String(value||'').trim(); if(!v) throw new Error('Ingrese el Sustento de Tienda.');
     const payload={order_key:String(orderKey),sustento:v,store_code:profile.store_code,updated_by:profile.id};
-    const {error}=await sb.from('sustentos').upsert(payload,{onConflict:'order_key'});
-    if(error) throw error;
-    return payload;
+    const {error}=await sb.from('sustentos').upsert(payload,{onConflict:'order_key'}); if(error) throw error; return payload;
   }
-  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,sendLink};
+  const DASHBOARD_STATE_ID='main';
+  let dashboardSyncTimer=null;
+  function cleanDashboardRows(rows){
+    return (Array.isArray(rows)?rows:[]).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
+  }
+  async function publishDashboard(){
+    if(!profile || profile.role!=='admin') return {ok:false,reason:'viewer'};
+    const rows=cleanDashboardRows(DATA);
+    const payload={id:DASHBOARD_STATE_ID,data:rows,updated_at:new Date().toISOString(),updated_by:profile.id};
+    const {error}=await sb.from('dashboard_state').upsert(payload,{onConflict:'id'});
+    if(error) throw error;
+    const el=document.getElementById('lastUpdate');
+    if(el) el.textContent='Base publicada para VISOR: '+new Date().toLocaleString('es-PE');
+    return {ok:true,count:rows.length};
+  }
+  async function loadSharedDashboard(){
+    const {data,error}=await sb.from('dashboard_state').select('id,data,updated_at').eq('id',DASHBOARD_STATE_ID).maybeSingle();
+    if(error) throw error;
+    if(!data || !Array.isArray(data.data) || !data.data.length) return false;
+    const rows=cleanDashboardRows(data.data);
+    DATA=rows;
+    if(typeof refreshCascadingOptions==='function') refreshCascadingOptions();
+    if(typeof render==='function') render();
+    const el=document.getElementById('lastUpdate');
+    if(el) el.textContent='Base sincronizada: '+new Date(data.updated_at).toLocaleString('es-PE');
+    return true;
+  }
+  function startDashboardSync(){
+    clearInterval(dashboardSyncTimer);
+    dashboardSyncTimer=setInterval(async()=>{
+      try{
+        if(profile?.role==='admin') return;
+        await loadSharedDashboard();
+      }catch(e){ console.warn('Sincronización VISOR:',e.message||e); }
+    },15000);
+  }
+  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,signIn,publishDashboard,loadSharedDashboard};
   window.ConectaSharedSync={
-    refresh:async()=>{try{await loadSustentos();return true;}catch(e){console.warn(e);return false;}},
-    publish:async()=>true,
-    setStatus:(msg,ok)=>{let el=document.getElementById('supabaseSyncBadge');if(!el){el=document.createElement('div');el.id='supabaseSyncBadge';el.style.cssText='position:fixed;right:14px;bottom:14px;z-index:99999;background:#fff;border:1px solid #d7e0ea;border-radius:10px;padding:8px 11px;font:600 12px Segoe UI,Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.08);';document.body.appendChild(el);}el.textContent=msg||'';el.style.color=ok?'#236b3a':'#8a3030';}
+    refresh:async()=>{try{await loadSharedDashboard();await loadSustentos();return true;}catch(e){console.warn(e);return false;}},
+    publish:publishDashboard,
+    setStatus:(msg,ok)=>{
+      const el=document.getElementById('routeStatus')||document.getElementById('uploadStatus');
+      if(el) el.textContent=msg||'';
+    }
   };
   document.addEventListener('DOMContentLoaded',async()=>{
-    document.getElementById('conectaAuthSend')?.addEventListener('click',sendLink);
-    document.getElementById('conectaAuthEmail')?.addEventListener('keydown',e=>{if(e.key==='Enter')sendLink();});
+    document.getElementById('conectaAuthSend')?.addEventListener('click',signIn);
+    document.getElementById('conectaAuthPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')signIn();});
     try{
       const ok=await loadProfile();
-      if(ok){ await loadSustentos(); window.ConectaSharedSync.setStatus('Conectado a Conecta Central · sustentos sincronizados.',true); }
-    }catch(e){console.error(e);gate(false);alert('No se pudo conectar con Conecta Central: '+(e.message||e));}
+      if(ok){
+        if(profile.role==='admin'){
+          await loadSustentos();
+          try{await publishDashboard();}catch(e){console.warn('No se pudo publicar la base inicial:',e.message||e);}
+        }else{
+          await loadSharedDashboard();
+          await loadSustentos();
+        }
+        startDashboardSync();
+      }
+    }catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
   });
-  sb.auth.onAuthStateChange(async()=>{try{const ok=await loadProfile();if(ok)await loadSustentos();}catch(e){console.error(e);}});
+  sb.auth.onAuthStateChange(async()=>{
+    try{
+      const ok=await loadProfile();
+      if(!ok) return;
+      if(profile.role==='admin'){ try{await publishDashboard();}catch(e){console.warn(e);} }
+      else { try{await loadSharedDashboard();}catch(e){console.warn(e);} }
+      startDashboardSync();
+    }catch(e){console.error(e);}
+  });
 })();
 </script>
 
+
+<style id="conecta-role-access">
+/* ===== ACCESO POR ROL: ADMIN / VISOR ===== */
+body.role-viewer #topUploadNav, body.role-viewer #uploadRoute, body.role-viewer #btnIrCarga, body.role-viewer #downloadSelection, body.role-viewer #importSmartSheet, body.role-viewer #downloadSustentoHistory, body.role-viewer #smartRouteFile, body.role-viewer label[for="smartRouteFile"], body.role-viewer #smartSave, body.role-viewer .line-save{display:none!important}
+body.role-viewer #smartRouteTable textarea[data-sustento]{display:none!important}
+body.role-viewer.smart-page #smartDownload{display:inline-flex!important}
+body.role-viewer.smart-page .smart-route-table-wrap{display:block!important}
+body.role-admin #topUploadNav{display:flex!important}
+body.role-admin #uploadRoute{display:none}
+body.role-admin #smartSave{display:inline-flex!important}
+body.role-admin .line-save{display:inline-flex!important}
+body.role-admin #smartRouteFile,body.role-admin label[for="smartRouteFile"]{display:inline-flex}
+</style>
+<script id="conecta-role-controller">
+(function(){
+ function enforce(){
+   const role=document.body.dataset.conectaRole;
+   if(!role) return;
+   const admin=role==='admin';
+   document.body.classList.toggle('single-viewer',!admin);
+   document.body.classList.toggle('role-admin',admin);
+   document.body.classList.toggle('role-viewer',!admin);
+   const nav=document.getElementById('topUploadNav'), up=document.getElementById('uploadRoute'), main=document.querySelector('body > main'), header=document.querySelector('body > header'), route=document.getElementById('smartSheetRoute');
+   if(admin){
+     if(nav) nav.style.setProperty('display','flex','important');
+     if(location.hash.toLowerCase()==='#cargar'){
+       if(up) up.style.setProperty('display','block','important');
+       if(main) main.style.setProperty('display','none','important');
+       if(header) header.style.setProperty('display','none','important');
+       if(route) route.style.setProperty('display','none','important');
+     } else if(location.hash.toLowerCase()==='#sustento'){
+       if(up) up.style.setProperty('display','none','important');
+       if(main) main.style.setProperty('display','none','important');
+       if(header) header.style.setProperty('display','none','important');
+       if(route) route.style.setProperty('display','block','important');
+     } else {
+       if(up) up.style.setProperty('display','none','important');
+       if(main) main.style.setProperty('display','block','important');
+       if(header) header.style.setProperty('display','block','important');
+       if(route) route.style.setProperty('display','none','important');
+     }
+   } else {
+     if(nav) nav.style.setProperty('display','none','important');
+     if(up) up.style.setProperty('display','none','important');
+     if(location.hash.toLowerCase()==='#sustento'){
+       if(main) main.style.setProperty('display','none','important'); if(header) header.style.setProperty('display','none','important'); if(route) route.style.setProperty('display','block','important');
+     } else {
+       if(main) main.style.setProperty('display','block','important'); if(header) header.style.setProperty('display','block','important'); if(route) route.style.setProperty('display','none','important');
+     }
+   }
+ }
+ function bind(){
+   document.getElementById('btnIrCarga')?.addEventListener('click',e=>{if(document.body.dataset.conectaRole!=='admin'){e.preventDefault();return;} setTimeout(enforce,20);});
+   document.getElementById('backToDashboard')?.addEventListener('click',()=>{location.hash='visor';setTimeout(enforce,20);});
+   window.addEventListener('hashchange',enforce);
+   enforce(); setInterval(enforce,700);
+ }
+ document.addEventListener('DOMContentLoaded',bind);
+})();
+</script>
 </html>

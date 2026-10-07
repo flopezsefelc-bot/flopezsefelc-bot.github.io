@@ -121,7 +121,14 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px;borde
 .alert-scroll td{white-space:nowrap}
 .alert-scroll .due-yellow{white-space:nowrap}
 .alert-today-compact .report-actions button{padding:7px 10px;font-size:11px}
-.status-alert{font-weight:700;color:#c94b4b}.alert-empty{padding:12px;background:#eef8f0;border:1px solid #cde5d2;border-radius:8px;color:#3f6f4b}.today-late-row{background:#fff7cc}.today-late-row td{border-bottom-color:#eadf9b}.due-yellow{background:#fff1a8;color:#7a6200;font-weight:700;padding:4px 7px;border-radius:5px;display:inline-block}.today-late-title{color:#8a6500}#nuevoHoyCard{display:none!important}<style>
+.status-alert{font-weight:700;color:#c94b4b}
+.alert-empty{padding:12px;background:#eef8f0;border:1px solid #cde5d2;border-radius:8px;color:#3f6f4b}
+.today-late-row{background:#fff7cc}
+.today-late-row td{border-bottom-color:#eadf9b}
+.due-yellow{background:#fff1a8;color:#7a6200;font-weight:700;padding:4px 7px;border-radius:5px;display:inline-block}
+.today-late-title{color:#8a6500}
+#nuevoHoyCard{display:none!important}
+
 .upload-panel{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px;display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:center}.upload-title{font-weight:700;font-size:14px}.upload-text{font-size:11px;color:var(--muted);margin:5px 0 8px}.upload-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.upload-button{border:1px solid #d6dce6;background:#f3f6fb;border-radius:7px;padding:8px 10px;color:var(--ink);cursor:pointer;font-weight:600}.upload-status{font-size:11px;color:var(--muted)}.upload-drop{border:2px dashed #cbd5e1;border-radius:8px;padding:18px;text-align:center;color:#65748b;font-size:12px;cursor:pointer;background:#fafbfd}.upload-drop span{font-size:11px}.upload-drop.drag{border-color:#4d78b7;background:#eef6ff}@media(max-width:900px){.upload-panel{grid-template-columns:1fr}}
 .upload-dashboard-section{display:none!important}
 
@@ -262,7 +269,6 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px;borde
 @media(max-width:900px){
   .region-alert-row{grid-template-columns:1fr !important}
 }
-</style>
 </style>
 <style id="compact-upload-button">
 #btnIrCarga{
@@ -687,7 +693,9 @@ window.CONECTA_SUPABASE_KEY="sb_publishable_NE-U675MSTjWuT66TSzZMw_WzRuU2GN";
     <div style="font-size:13px;color:#68788c;line-height:1.5;margin-bottom:18px">Ingresa con tu correo. Te enviaremos un enlace de acceso. El VISOR no permite modificar la base principal.</div>
     <label style="display:block;font-size:13px;font-weight:700;color:#17324d;margin-bottom:6px">Correo electrónico</label>
     <input id="conectaAuthEmail" type="email" placeholder="nombre@correo.com" autocomplete="email" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
-    <button id="conectaAuthSend" type="button" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:9px;background:#123b5d;color:#fff;font-weight:800;cursor:pointer">Enviar enlace de acceso</button>
+    <button id="conectaAuthSend" type="button" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:9px;background:#123b5d;color:#fff;font-weight:800;cursor:pointer">Ingresar al VISOR</button>
+    <label style="display:block;font-size:13px;font-weight:700;color:#17324d;margin:12px 0 6px">Contraseña</label>
+<input id="conectaAuthPassword" type="password" placeholder="Ingresa tu contraseña" autocomplete="current-password" style="width:100%;padding:12px;border:1px solid #cbd8e5;border-radius:9px;box-sizing:border-box;font-size:14px">
     <div id="conectaAuthStatus" style="font-size:12px;color:#68788c;margin-top:12px;min-height:18px"></div>
   </div>
 </div>
@@ -2643,7 +2651,7 @@ body.single-viewer.smart-page #smartSave{display:none!important}
   }
   async function sendLink(){
     const input=document.getElementById('conectaAuthEmail'); const email=String(input?.value||'').trim();
-    if(!email){status('Escribe tu correo electrónico.',false);return;}
+    if(!email){status('autocomplete="email".',false);return;}
     const btn=document.getElementById('conectaAuthSend'); if(btn) btn.disabled=true;
     status('Enviando enlace de acceso...',true);
     try{

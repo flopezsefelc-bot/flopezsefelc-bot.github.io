@@ -2101,8 +2101,8 @@ async function loadFile(file){
    uploadStatus.textContent='Leyendo '+file.name+'...';
    if(!window.XLSX) throw new Error('No se pudo cargar el lector de Excel. Abre el dashboard con conexión a internet la primera vez.');
    const parsed=await parseWorkbook(file);
-   const mapped=parsed.rows.map(mapUploadRow).filter(Boolean).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
-   if(!mapped.length) throw new Error('No encontré filas válidas de 2026. Los registros 2027 se excluyen automáticamente.');
+   const mapped=parsed.rows.map(mapUploadRow).filter(Boolean);
+   if(!mapped.length) throw new Error('No encontré filas válidas. Usa la plantilla de BASE CONSOLIDADA.');
    const subConDato=mapped.filter(x=>String(x.subAgrupacion||'').trim()).length;
    if(!subConDato) throw new Error('El archivo no trae información en la columna D (Sub Agrupacion por estado). Verifica que la columna D tenga los datos antes de cargarlo.');
    const existing=await dbGetAll();
@@ -2136,21 +2136,10 @@ async function loadFile(file){
    }
    const finalRows=[...existingMap.values()];
    if(finalRows.length) await dbPutRows(finalRows);
-   DATA=finalRows.map(({_id,...x})=>x).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
+   DATA=finalRows.map(({_id,...x})=>x);
    refreshCascadingOptions(); render();
    uploadStatus.textContent=`${nuevos} registros nuevos agregados · ${actualizados} registros actualizados · ${repetidos} sin cambios · ${mapped.length} leídos · ${subConDato} con Sub Agrupación de columna D`;
-   document.getElementById('lastUpdate').textContent='Base cargada en ADMIN: '+new Date().toLocaleString('es-PE');
-   if(window.ConectaSupabase?.getProfile?.()?.role==='admin'){
-     try{
-       uploadStatus.textContent+=' · Publicando para VISOR...';
-       const pub=await window.ConectaSupabase.publishDashboard();
-       uploadStatus.textContent+=` ✓ VISOR actualizado (${pub.count} registros)`;
-     }catch(syncErr){
-       console.error(syncErr);
-       uploadStatus.textContent+=' · ⚠ No se pudo publicar al VISOR: '+(syncErr.message||syncErr);
-       alert('La base quedó cargada en ADMIN, pero no se pudo publicar al VISOR. Verifica la tabla dashboard_state en Supabase.\n\n'+(syncErr.message||syncErr));
-     }
-   }
+   document.getElementById('lastUpdate').textContent='Base alimentada: '+new Date().toLocaleString('es-PE');
  }catch(err){console.error(err);uploadStatus.textContent='Error: '+err.message;alert(err.message);}
 }
 if(fileInput){
@@ -2480,7 +2469,7 @@ initPersistentData();
     body.innerHTML='';
     const allRows=(typeof smartSheetRows==='function'?smartSheetRows():[]);
     const p=window.ConectaSupabase?.getProfile?.();
-    const rows=p?.store_code ? allRows.filter(x=>String(x.codigoTienda||'').trim()===String(p.store_code).trim()) : [];
+    const rows=p?.store_code ? allRows.filter(x=>String(x.codigoTienda||'').trim()===String(p.store_code).trim()) : allRows;
     const dateLabel=rows[0]?.fecha || (typeof getTodayISO==='function'?getTodayISO():'');
     const dateEl=document.getElementById('smartRouteDate'); if(dateEl) dateEl.textContent='Fecha de carga: '+dateLabel+' · '+rows.length+' pedidos Tarde';
     if(!rows.length){body.innerHTML='<tr><td colspan="10" style="text-align:center;padding:35px;color:#6b7280">No hay pedidos Tarde en la fecha actual de carga.</td></tr>';return;}
@@ -2702,77 +2691,14 @@ body.single-viewer.smart-page #smartSave{display:none!important}
     const payload={order_key:String(orderKey),sustento:v,store_code:profile.store_code,updated_by:profile.id};
     const {error}=await sb.from('sustentos').upsert(payload,{onConflict:'order_key'}); if(error) throw error; return payload;
   }
-  const DASHBOARD_STATE_ID='main';
-  let dashboardSyncTimer=null;
-  function cleanDashboardRows(rows){
-    return (Array.isArray(rows)?rows:[]).filter(x=>String(x?.anio||x?.fecha?.slice?.(0,4)||'')!=='2027');
-  }
-  async function publishDashboard(){
-    if(!profile || profile.role!=='admin') return {ok:false,reason:'viewer'};
-    const rows=cleanDashboardRows(DATA);
-    const payload={id:DASHBOARD_STATE_ID,data:rows,updated_at:new Date().toISOString(),updated_by:profile.id};
-    const {error}=await sb.from('dashboard_state').upsert(payload,{onConflict:'id'});
-    if(error) throw error;
-    const el=document.getElementById('lastUpdate');
-    if(el) el.textContent='Base publicada para VISOR: '+new Date().toLocaleString('es-PE');
-    return {ok:true,count:rows.length};
-  }
-  async function loadSharedDashboard(){
-    const {data,error}=await sb.from('dashboard_state').select('id,data,updated_at').eq('id',DASHBOARD_STATE_ID).maybeSingle();
-    if(error) throw error;
-    if(!data || !Array.isArray(data.data) || !data.data.length) return false;
-    const rows=cleanDashboardRows(data.data);
-    DATA=rows;
-    if(typeof refreshCascadingOptions==='function') refreshCascadingOptions();
-    if(typeof render==='function') render();
-    const el=document.getElementById('lastUpdate');
-    if(el) el.textContent='Base sincronizada: '+new Date(data.updated_at).toLocaleString('es-PE');
-    return true;
-  }
-  function startDashboardSync(){
-    clearInterval(dashboardSyncTimer);
-    dashboardSyncTimer=setInterval(async()=>{
-      try{
-        if(profile?.role==='admin') return;
-        await loadSharedDashboard();
-      }catch(e){ console.warn('Sincronización VISOR:',e.message||e); }
-    },15000);
-  }
-  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,signIn,publishDashboard,loadSharedDashboard};
-  window.ConectaSharedSync={
-    refresh:async()=>{try{await loadSharedDashboard();await loadSustentos();return true;}catch(e){console.warn(e);return false;}},
-    publish:publishDashboard,
-    setStatus:(msg,ok)=>{
-      const el=document.getElementById('routeStatus')||document.getElementById('uploadStatus');
-      if(el) el.textContent=msg||'';
-    }
-  };
+  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,signIn};
+  window.ConectaSharedSync={refresh:async()=>{try{await loadSustentos();return true;}catch(e){return false;}},publish:async()=>true,setStatus:(msg,ok)=>{}};
   document.addEventListener('DOMContentLoaded',async()=>{
     document.getElementById('conectaAuthSend')?.addEventListener('click',signIn);
     document.getElementById('conectaAuthPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')signIn();});
-    try{
-      const ok=await loadProfile();
-      if(ok){
-        if(profile.role==='admin'){
-          await loadSustentos();
-          try{await publishDashboard();}catch(e){console.warn('No se pudo publicar la base inicial:',e.message||e);}
-        }else{
-          await loadSharedDashboard();
-          await loadSustentos();
-        }
-        startDashboardSync();
-      }
-    }catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
+    try{const ok=await loadProfile();if(ok)await loadSustentos();}catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
   });
-  sb.auth.onAuthStateChange(async()=>{
-    try{
-      const ok=await loadProfile();
-      if(!ok) return;
-      if(profile.role==='admin'){ try{await publishDashboard();}catch(e){console.warn(e);} }
-      else { try{await loadSharedDashboard();}catch(e){console.warn(e);} }
-      startDashboardSync();
-    }catch(e){console.error(e);}
-  });
+  sb.auth.onAuthStateChange(async()=>{try{await loadProfile();}catch(e){console.error(e);}});
 })();
 </script>
 

@@ -2147,7 +2147,21 @@ async function loadFile(file){
    if(finalRows.length) await dbPutRows(finalRows);
    DATA=finalRows.map(({_id,...x})=>x);
    refreshCascadingOptions(); render();
-   uploadStatus.textContent=`${nuevos} registros nuevos agregados · ${actualizados} registros actualizados · ${repetidos} sin cambios · ${mapped.length} leídos · ${subConDato} con Sub Agrupación de columna D`;
+
+   // PUBLICACIÓN COMPARTIDA: la carga del ADMIN ya no queda solamente en
+   // IndexedDB. Se publica la base acumulativa para que VISOR consulte la
+   // misma información desde Conecta Central.
+   let sharedMsg='';
+   if(window.ConectaSupabase?.publishSharedBase){
+     try{
+       const nPub=await window.ConectaSupabase.publishSharedBase(DATA);
+       sharedMsg=` · ${nPub} publicados en Conecta Central`;
+     }catch(pubErr){
+       console.warn('No se pudo publicar la base compartida:',pubErr);
+       sharedMsg=' · ADVERTENCIA: la base quedó local; no se pudo publicar en Conecta Central';
+     }
+   }
+   uploadStatus.textContent=`${nuevos} registros nuevos agregados · ${actualizados} registros actualizados · ${repetidos} sin cambios · ${mapped.length} leídos · ${subConDato} con Sub Agrupación de columna D${sharedMsg}`;
    document.getElementById('lastUpdate').textContent='Base alimentada: '+new Date().toLocaleString('es-PE');
  }catch(err){console.error(err);uploadStatus.textContent='Error: '+err.message;alert(err.message);}
 }
@@ -2209,30 +2223,62 @@ document.getElementById('downloadSustentoHistory')?.addEventListener('click',asy
      .select('order_key,sustento,store_code,updated_at,updated_by')
      .order('updated_at',{ascending:false});
    if(error) throw error;
-   if(!data || !data.length){
-     alert('Todavía no hay sustentos guardados en Supabase.');
+   const current=(data||[]).filter(x=>!String(x.order_key||'').startsWith('__BASE__¦'));
+
+   // Histórico compartido de actualizaciones. Es opcional para mantener
+   // compatibilidad con proyectos donde la tabla aún no fue creada.
+   let history=[];
+   try{
+     const h=await sbClient.from('sustento_historial')
+       .select('order_key,sustento_anterior,sustento_nuevo,store_code,updated_at,updated_by,origen')
+       .order('updated_at',{ascending:false});
+     if(!h.error) history=h.data||[];
+   }catch(e){ console.warn('Tabla sustento_historial no disponible:',e); }
+
+   if(!current.length && !history.length){
+     alert('Todavía no hay sustentos guardados en Conecta Central.');
      return;
    }
 
-   const out=data.map(x=>{
+   const out=[];
+   current.forEach(x=>{
      const parts=String(x.order_key||'').split('¦');
-     return {
+     out.push({
+       'Tipo de registro':'Vigente',
        'Fecha de actualización':x.updated_at ? new Date(x.updated_at).toLocaleDateString('es-PE') : '',
        'Hora de actualización':x.updated_at ? new Date(x.updated_at).toLocaleTimeString('es-PE') : '',
        'Fecha del pedido':parts[2]||'',
        'Pedido':parts[0]||'',
        'Artículo':parts[1]||'',
        'Código Tienda':x.store_code||'',
+       'Sustento anterior':'',
        'Sustento de Tienda':x.sustento||'',
-       'Usuario que actualizó':x.updated_by||''
-     };
+       'Usuario que actualizó':x.updated_by||'',
+       'Origen':'Sustento vigente'
+     });
+   });
+   history.forEach(x=>{
+     const parts=String(x.order_key||'').split('¦');
+     out.push({
+       'Tipo de registro':'Histórico',
+       'Fecha de actualización':x.updated_at ? new Date(x.updated_at).toLocaleDateString('es-PE') : '',
+       'Hora de actualización':x.updated_at ? new Date(x.updated_at).toLocaleTimeString('es-PE') : '',
+       'Fecha del pedido':parts[2]||'',
+       'Pedido':parts[0]||'',
+       'Artículo':parts[1]||'',
+       'Código Tienda':x.store_code||'',
+       'Sustento anterior':x.sustento_anterior||'',
+       'Sustento de Tienda':x.sustento_nuevo||'',
+       'Usuario que actualizó':x.updated_by||'',
+       'Origen':x.origen||'Actualización de sustento'
+     });
    });
 
    const ws=XLSX.utils.json_to_sheet(out);
    const wb=XLSX.utils.book_new();
    XLSX.utils.book_append_sheet(wb,ws,'SUSTENTOS SUPABASE');
    ws['!cols']=[
-     {wch:22},{wch:22},{wch:18},{wch:18},{wch:22},{wch:16},{wch:65},{wch:38}
+     {wch:16},{wch:22},{wch:22},{wch:18},{wch:18},{wch:22},{wch:16},{wch:65},{wch:65},{wch:38},{wch:30}
    ];
    const fileName=`HISTORICO_SUSTENTOS_TIENDA_${getTodayISO()}.xlsx`;
    try{
@@ -2248,7 +2294,7 @@ document.getElementById('downloadSustentoHistory')?.addEventListener('click',asy
      a.click();
      setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
    }
-   alert(`Descarga completada. Se exportaron ${out.length} sustentos guardados en Supabase.`);
+   alert(`Descarga completada. Se exportaron ${out.length} registros entre sustentos vigentes e histórico.`);
  }catch(err){
    console.error(err);
    alert('No se pudo generar el histórico desde Supabase: '+(err?.message||err));
@@ -2478,9 +2524,10 @@ window.CONectaDataReady = initPersistentData();
     }
   }
 
-  // Guardado individual, una sola vez por línea.
+  // Guardado individual: permite actualizar el sustento si el pedido sigue pendiente.
+  // Cada actualización queda registrada como un nuevo evento de histórico.
   async function saveOneLine(tr){
-    if(!tr || tr.dataset.saved==='1') return;
+    if(!tr) return;
     const key=tr.dataset.key;
     const ta=tr.querySelector('[data-sustento]');
     const btn=tr.querySelector('.line-save');
@@ -2488,29 +2535,31 @@ window.CONectaDataReady = initPersistentData();
     if(!value){ alert('Ingrese el Sustento de Tienda antes de guardar.'); return; }
     const idx=DATA.findIndex(x=>smartMatchKey(x)===key);
     if(idx<0){ alert('No se encontró el pedido en la base.'); return; }
-    const old=String(DATA[idx].sustentoTienda||'').trim();
-    if(old){
-      ta.disabled=true; tr.dataset.saved='1'; if(btn){btn.disabled=true;btn.textContent='✓ Guardado';btn.classList.add('line-saved');}
+    const anterior=String(DATA[idx].sustentoTienda||'').trim();
+    if(anterior===value){
+      if(btn){btn.disabled=true;btn.textContent='✓ Sin cambios';btn.classList.add('line-saved');}
+      if(ta) ta.disabled=true;
       return;
     }
     const y={...DATA[idx],sustentoTienda:value};
-    DATA[idx]=y;
     try{
       if(!window.ConectaSupabase?.saveSustento) throw new Error('Conexión con Conecta Central no disponible.');
-      // Guardar con clave única por Pedido + Artículo + Fecha.
-      // Esto permite guardar varias líneas sin que una sobrescriba a otra.
-      await window.ConectaSupabase.saveSustento(smartMatchKey(y),value,y.codigoTienda);
+      // La tabla sustentos conserva SOLO el último sustento vigente.
+      // El histórico se guarda aparte antes de reemplazarlo.
+      await window.ConectaSupabase.saveSustento(smartMatchKey(y),value,y.codigoTienda,{previousSustento:anterior});
+      DATA[idx]=y;
       await dbPutRows([y]);
       const dias=dateDiffDays(y.fecha||getTodayISO(),y.fechaPref||y.fecha||getTodayISO());
-      await saveSustentoHistory([{...y,diasVencidos:dias,vencimientoLabel:(dias>0?`${dias} días vencido`:dias===0?'Vence hoy':`Faltan ${Math.abs(dias)} días`)}],'Guardado individual desde visor');
-      window.ConectaSharedSync?.setStatus('Sustento guardado en Conecta Central · ADMIN podrá verlo.',true);
-      ta.disabled=true;
+      await saveSustentoHistory([{...y,sustentoAnterior:anterior,diasVencidos:dias,vencimientoLabel:(dias>0?`${dias} días vencido`:dias===0?'Vence hoy':`Faltan ${Math.abs(dias)} días`)}],'Actualización de sustento desde visor');
+      window.ConectaSharedSync?.setStatus('Sustento actualizado en Conecta Central · histórico conservado.',true);
+      if(ta){ta.disabled=true;ta.value=value;}
       tr.dataset.saved='1';
-      if(btn){btn.disabled=true;btn.textContent='✓ Guardado';btn.classList.add('line-saved');}
-      const st=document.getElementById('smartRouteStatus'); if(st) st.textContent='Sustento guardado correctamente.';
-      // No llamar render(): ese render reconstruye el dashboard y borra el
-      // estado visual del SmartSheet. La fila ya quedó actualizada en pantalla.
-    }catch(e){ alert('No se pudo guardar el sustento: '+e.message); }
+      if(btn){btn.disabled=true;btn.textContent='✓ Actualizado';btn.classList.add('line-saved');}
+      const st=document.getElementById('smartRouteStatus'); if(st) st.textContent=anterior?'Sustento actualizado. El anterior quedó en el histórico.':'Sustento guardado correctamente.';
+    }catch(e){
+      DATA[idx]={...DATA[idx],sustentoTienda:anterior};
+      alert('No se pudo guardar el sustento: '+e.message);
+    }
   }
 
   function renderSmartSingle(){
@@ -2535,8 +2584,9 @@ window.CONectaDataReady = initPersistentData();
       const rowKey=smartMatchKey(x);
       const draft=String(draftMap.get(rowKey)||'').trim();
       const already=String(x.sustentoTienda||'').trim() || draft;
-      tr.innerHTML=`<td>${esc(x.pedido)}</td><td>${esc(x.articulo)}</td><td>${esc(x.region)}</td><td>${esc(x.tienda)}</td><td>${esc(x.cliente)}</td><td>${esc(x.fecha)}</td><td>${esc(x.fechaPref||'Sin fecha')}</td><td><span class="late-days">${esc(x.vencimientoLabel)}</span></td><td class="status-alert">Tarde HOY</td><td class="sustento-cell"><textarea data-sustento="1" placeholder="Ingrese el sustento de la tienda...">${esc(already)}</textarea><button type="button" class="line-save ${already?'line-saved':''}" ${already?'disabled':''}>${already?'✓ Guardado':'💾 Guardar'}</button></td>`;
-      if(already) tr.querySelector('textarea').disabled=true;
+      tr.innerHTML=`<td>${esc(x.pedido)}</td><td>${esc(x.articulo)}</td><td>${esc(x.region)}</td><td>${esc(x.tienda)}</td><td>${esc(x.cliente)}</td><td>${esc(x.fecha)}</td><td>${esc(x.fechaPref||'Sin fecha')}</td><td><span class="late-days">${esc(x.vencimientoLabel)}</span></td><td class="status-alert">Tarde HOY</td><td class="sustento-cell"><textarea data-sustento="1" placeholder="Ingrese un nuevo sustento si el pedido sigue pendiente...">${esc(already)}</textarea><button type="button" class="line-save" ${draft?'':' '}>${already?'↻ Actualizar':'💾 Guardar'}</button></td>`;
+      // Un sustento previo NO bloquea la línea: si continúa pendiente,
+      // la tienda puede reemplazarlo y la versión anterior queda en histórico.
       tr.querySelector('.line-save').addEventListener('click',()=>saveOneLine(tr));
       body.appendChild(tr);
     });
@@ -2759,18 +2809,17 @@ body.role-viewer label[for="smartRouteFile"]{
   }
   async function loadSustentos(){
     if(!profile) return;
-    let q=sb.from('sustentos').select('order_key,sustento,store_code,updated_at');
+    let q=sb.from('sustentos').select('order_key,sustento,store_code,updated_at,updated_by');
     if(profile.role!=='admin' && profile.store_code) q=q.eq('store_code',profile.store_code);
     const {data,error}=await q;
     if(error) return;
 
-    // CLAVE ROBUSTA: Pedido + Artículo + Fecha.
-    // La versión anterior usaba solo x.key (Pedido + Artículo), lo que
-    // provocaba colisiones cuando el mismo pedido/artículo aparecía en
-    // distintas fechas y hacía que un sustento pareciera desaparecer.
+    // Las filas __BASE__ son la base compartida del dashboard, no sustentos.
+    // No deben contaminar la columna Sustento de Tienda.
+    const sustentoRows=(data||[]).filter(r=>!String(r.order_key||'').startsWith('__BASE__¦'));
     const exactMap=new Map();
     const legacyMap=new Map();
-    (data||[]).forEach(r=>{
+    sustentoRows.forEach(r=>{
       const ok=String(r.order_key||'').trim();
       if(!ok) return;
       exactMap.set(ok,r);
@@ -2794,26 +2843,83 @@ body.role-viewer label[for="smartRouteFile"]{
     });
 
     if(changed){
-      // En SmartSheet NO redibujar el dashboard completo: eso borraba
-      // lo que el VISOR estaba escribiendo y provocaba la sensación de
-      // que la información se eliminaba. Solo refrescamos la tabla de
-      // sustentos cuando estamos en esa ruta.
-      if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function'){
-        renderSmartSingle();
-      }else if(typeof render==='function'){
-        render();
-      }
+      if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle();
+      else if(typeof render==='function') render();
     }
-    return {count:(data||[]).length,changed};
+    return {count:sustentoRows.length,changed};
   }
-  async function saveSustento(orderKey,value,storeCodeOverride){
+
+  // Publica la BASE CONSOLIDADA en Conecta Central usando la misma tabla
+  // compartida ya existente. Cada fila se identifica con __BASE__ + Pedido +
+  // Artículo + Fecha y se guarda como JSON. Así ADMIN y VISOR consultan la
+  // misma base y no dependen del IndexedDB local de cada computador.
+  async function publishSharedBase(rows){
+    if(!profile || profile.role!=='admin') throw new Error('Solo ADMIN puede publicar la base.');
+    const list=(rows||[]).filter(x=>x && x.pedido && x.fecha);
+    if(!list.length) return 0;
+    const payloads=list.map(x=>({
+      order_key:'__BASE__¦'+smartMatchKey(x),
+      sustento:JSON.stringify(x),
+      store_code:String(x.codigoTienda||'').trim()||null,
+      updated_by:profile.id
+    }));
+    for(let i=0;i<payloads.length;i+=250){
+      const {error}=await sb.from('sustentos').upsert(payloads.slice(i,i+250),{onConflict:'order_key'});
+      if(error) throw error;
+    }
+    return payloads.length;
+  }
+
+  async function loadSharedBase(){
+    if(!profile) return {count:0,changed:false};
+    // La BASE es compartida para el dashboard completo. El filtro por tienda
+    // se aplica únicamente al SmartSheet/sustento, no al dashboard del VISOR.
+    const q=sb.from('sustentos').select('order_key,sustento,store_code,updated_at').like('order_key','__BASE__¦%');
+    const {data,error}=await q;
+    if(error) return {count:0,changed:false,error};
+    const shared=(data||[]).map(r=>{try{return JSON.parse(String(r.sustento||''));}catch(e){return null;}}).filter(Boolean);
+    if(!shared.length) return {count:0,changed:false};
+    const map=new Map((DATA||[]).map(x=>[[String(x.key||'')+'¦'+String(x.fecha||'')],x]));
+    let changed=false;
+    shared.forEach(x=>{
+      const k=String(x.key||'')+'¦'+String(x.fecha||'');
+      const prev=map.get(k);
+      const merged={...(prev||{}),...x};
+      if(prev?.sustentoTienda && !x.sustentoTienda) merged.sustentoTienda=prev.sustentoTienda;
+      if(!prev || JSON.stringify(prev)!==JSON.stringify(merged)){map.set(k,merged);changed=true;}
+    });
+    if(changed){
+      DATA=[...map.values()];
+      await dbReplaceRows(DATA.map(x=>({...x,_id:rowId(x)})));
+      refreshCascadingOptions();
+      if(typeof render==='function' && location.hash.toLowerCase()!=='#sustento') render();
+      if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle();
+    }
+    return {count:shared.length,changed};
+  }
+
+  async function saveSustento(orderKey,value,storeCodeOverride,meta){
     if(!profile || !['admin','viewer'].includes(profile.role)) throw new Error('Usuario sin permiso para guardar sustentos.');
     const v=String(value||'').trim(); if(!v) throw new Error('Ingrese el Sustento de Tienda.');
     const storeCode=String(storeCodeOverride||profile.store_code||'').trim();
     const payload={order_key:String(orderKey),sustento:v,store_code:storeCode||null,updated_by:profile.id};
-    const {error}=await sb.from('sustentos').upsert(payload,{onConflict:'order_key'}); if(error) throw error; return payload;
+    const previous=String(meta?.previousSustento||'').trim();
+
+    // Histórico compartido: si existe la tabla opcional, se agrega una fila
+    // antes de actualizar el sustento vigente. Si aún no existe, no se bloquea
+    // el guardado: el histórico local sigue funcionando como respaldo.
+    if(previous && previous!==v){
+      try{
+        const historyPayload={order_key:String(orderKey),sustento_anterior:previous,sustento_nuevo:v,store_code:storeCode||null,updated_by:profile.id,origen:'Conecta Dashboard'};
+        const h=await sb.from('sustento_historial').insert(historyPayload);
+        if(h.error) console.warn('Histórico remoto no disponible:',h.error.message||h.error);
+      }catch(e){ console.warn('Histórico remoto no disponible:',e); }
+    }
+    const {error}=await sb.from('sustentos').upsert(payload,{onConflict:'order_key'});
+    if(error) throw error;
+    return payload;
   }
-  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,signIn};
+  window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,loadSharedBase,publishSharedBase,saveSustento,loadProfile,signIn};
   window.ConectaSharedSync={refresh:async()=>{try{await loadSustentos();return true;}catch(e){return false;}},publish:async()=>true,setStatus:(msg,ok)=>{}};
 
   // SINCRONIZACION EN TIEMPO REAL / CASI INMEDIATA:
@@ -2827,8 +2933,8 @@ body.role-viewer label[for="smartRouteFile"]{
     sustentoSyncTimer=setInterval(async()=>{
       if(!profile) return;
       if(document.hidden) return;
-      try{await loadSustentos();}catch(e){console.warn('Sincronización de sustentos:',e);}
-    },3000);
+      try{await loadSharedBase(); await loadSustentos();}catch(e){console.warn('Sincronización Conecta Central:',e);}
+    },10000);
     try{
       if(sustentoRealtimeChannel) sb.removeChannel(sustentoRealtimeChannel);
       sustentoRealtimeChannel=sb.channel('conecta-sustentos-live')
@@ -2845,6 +2951,7 @@ body.role-viewer label[for="smartRouteFile"]{
       const ok=await loadProfile();
       if(ok){
         if(window.CONectaDataReady) await window.CONectaDataReady;
+        await loadSharedBase();
         await loadSustentos();
         if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle();
         startSustentoSync();
@@ -2854,7 +2961,7 @@ body.role-viewer label[for="smartRouteFile"]{
   sb.auth.onAuthStateChange(async()=>{
     try{
       const ok=await loadProfile();
-      if(ok){await loadSustentos(); if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle(); startSustentoSync();}
+      if(ok){await loadSharedBase(); await loadSustentos(); if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle(); startSustentoSync();}
     }catch(e){console.error(e);}
   });
 })();

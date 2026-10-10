@@ -2271,25 +2271,43 @@ async function initPersistentData(){
  try{
    const stored=await dbGetAll();
    const mergeKey = x => [String(x.key||''), String(x.fecha||'')].join('¦');
-   const storedMap = new Map((stored||[]).map(x=>[mergeKey(x),x]));
+   const currentYear=String(new Date().getFullYear());
 
-   // La base incorporada en este archivo es la fuente oficial.
-   // Solo recuperamos de IndexedDB los sustentos ya escritos por las tiendas.
-   // Así nunca vuelven a aparecer registros obsoletos (por ejemplo 2027)
-   // que pertenecían a una versión anterior del dashboard.
-   DATA=(DATA||[]).map(x=>{
-     const prev=storedMap.get(mergeKey(x));
-     const out={...x};
-     if(prev && String(prev.sustentoTienda||'').trim()){
-       out.sustentoTienda=String(prev.sustentoTienda).trim();
-     }
-     if(prev && !String(out.subAgrupacion||'').trim() && String(prev.subAgrupacion||'').trim()){
-       out.subAgrupacion=String(prev.subAgrupacion).trim();
-     }
-     return out;
+   // BASE ACUMULATIVA: conserva las semanas/días que ya fueron cargados
+   // en este navegador y agrega la base que viene embebida en esta versión.
+   // Así, al actualizar el HTML, NO se pierde el histórico de semanas.
+   // También descartamos únicamente datos de años futuros (por ejemplo 2027).
+   const storedValid=(stored||[]).filter(x=>{
+     const y=String(x.anio||String(x.fecha||'').slice(0,4)||'').trim();
+     return !y || y<=currentYear;
+   });
+   const embeddedValid=(DATA||[]).filter(x=>{
+     const y=String(x.anio||String(x.fecha||'').slice(0,4)||'').trim();
+     return !y || y<=currentYear;
    });
 
-   if(DATA.length) await dbReplaceRows(DATA);
+   const mergedMap=new Map();
+   // Primero conservamos TODO lo almacenado localmente (semanas anteriores).
+   storedValid.forEach(x=>mergedMap.set(mergeKey(x),x));
+
+   // Luego incorporamos la base embebida actual. Si la clave ya existe,
+   // la información actualizada de la base tiene prioridad, pero conservamos
+   // sustentos/subagrupación que ya hayan sido guardados.
+   embeddedValid.forEach(x=>{
+     const k=mergeKey(x);
+     const prev=mergedMap.get(k);
+     const out={...(prev||{}),...x};
+     if(prev && String(prev.sustentoTienda||'').trim()) out.sustentoTienda=String(prev.sustentoTienda).trim();
+     if(prev && !String(out.subAgrupacion||'').trim() && String(prev.subAgrupacion||'').trim()) out.subAgrupacion=String(prev.subAgrupacion).trim();
+     out._id=prev?._id || x._id || rowId(out);
+     mergedMap.set(k,out);
+   });
+
+   DATA=[...mergedMap.values()].map(({_id,...x})=>x);
+   const rowsForDb=[...mergedMap.values()];
+   if(rowsForDb.length) await dbReplaceRows(rowsForDb);
+
+   console.info('BASE ACUMULATIVA:',DATA.length,'registros · semanas:',uniq(DATA.map(x=>x.semana)).join(', '));
  }catch(e){ console.warn('Persistencia no disponible',e); }
 
  fill('region',uniq(DATA.map(x=>x.region)),'Todas');

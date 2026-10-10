@@ -2699,7 +2699,17 @@ body.role-viewer label[for="smartRouteFile"]{
     const map=new Map((data||[]).map(r=>[String(r.order_key),r]));
     let changed=false;
     DATA=(DATA||[]).map(x=>{const r=map.get(String(x.key||''));if(!r)return x;const v=String(r.sustento||'');if(String(x.sustentoTienda||'')!==v){changed=true;return {...x,sustentoTienda:v};}return x;});
-    if(changed && typeof render==='function') render();
+    if(changed){
+      if(typeof render==='function') render();
+      // IMPORTANTE: el SmartSheet tiene su propio renderizado y no depende
+      // del render() general del dashboard. Actualizarlo después de recuperar
+      // sustentos evita que ADMIN vea la tabla vacía/antigua aunque Supabase
+      // ya tenga el dato guardado.
+      if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function'){
+        renderSmartSingle();
+      }
+    }
+    return {count:(data||[]).length,changed};
   }
   async function saveSustento(orderKey,value,storeCodeOverride){
     if(!profile || !['admin','viewer'].includes(profile.role)) throw new Error('Usuario sin permiso para guardar sustentos.');
@@ -2710,12 +2720,48 @@ body.role-viewer label[for="smartRouteFile"]{
   }
   window.ConectaSupabase={sb,getProfile:()=>profile,loadSustentos,saveSustento,loadProfile,signIn};
   window.ConectaSharedSync={refresh:async()=>{try{await loadSustentos();return true;}catch(e){return false;}},publish:async()=>true,setStatus:(msg,ok)=>{}};
+
+  // SINCRONIZACION EN TIEMPO REAL / CASI INMEDIATA:
+  // Supabase Realtime se usa cuando está habilitado y, como respaldo,
+  // hacemos una consulta periódica para que ADMIN vea un sustento guardado
+  // por VISOR sin tener que cerrar ni recargar la página.
+  let sustentoSyncTimer=null;
+  let sustentoRealtimeChannel=null;
+  function startSustentoSync(){
+    if(sustentoSyncTimer) clearInterval(sustentoSyncTimer);
+    sustentoSyncTimer=setInterval(async()=>{
+      if(!profile) return;
+      if(document.hidden) return;
+      try{await loadSustentos();}catch(e){console.warn('Sincronización de sustentos:',e);}
+    },3000);
+    try{
+      if(sustentoRealtimeChannel) sb.removeChannel(sustentoRealtimeChannel);
+      sustentoRealtimeChannel=sb.channel('conecta-sustentos-live')
+        .on('postgres_changes',{event:'*',schema:'public',table:'sustentos'},()=>{
+          loadSustentos().catch(e=>console.warn('Realtime sustentos:',e));
+        })
+        .subscribe();
+    }catch(e){console.warn('Realtime no disponible; se usará sincronización periódica.',e);}
+  }
   document.addEventListener('DOMContentLoaded',async()=>{
     document.getElementById('conectaAuthSend')?.addEventListener('click',signIn);
     document.getElementById('conectaAuthPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')signIn();});
-    try{const ok=await loadProfile();if(ok){if(window.CONectaDataReady) await window.CONectaDataReady; await loadSustentos();}}catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
+    try{
+      const ok=await loadProfile();
+      if(ok){
+        if(window.CONectaDataReady) await window.CONectaDataReady;
+        await loadSustentos();
+        if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle();
+        startSustentoSync();
+      }
+    }catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
   });
-  sb.auth.onAuthStateChange(async()=>{try{await loadProfile();}catch(e){console.error(e);}});
+  sb.auth.onAuthStateChange(async()=>{
+    try{
+      const ok=await loadProfile();
+      if(ok){await loadSustentos(); if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function') renderSmartSingle(); startSustentoSync();}
+    }catch(e){console.error(e);}
+  });
 })();
 </script>
 

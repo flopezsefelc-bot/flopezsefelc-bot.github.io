@@ -2259,7 +2259,7 @@ async function initPersistentData(){
  refreshCascadingOptions();
  render();
 }
-initPersistentData();
+window.CONectaDataReady = initPersistentData();
 </script>
 
 
@@ -2713,7 +2713,7 @@ body.role-viewer label[for="smartRouteFile"]{
   document.addEventListener('DOMContentLoaded',async()=>{
     document.getElementById('conectaAuthSend')?.addEventListener('click',signIn);
     document.getElementById('conectaAuthPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')signIn();});
-    try{const ok=await loadProfile();if(ok)await loadSustentos();}catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
+    try{const ok=await loadProfile();if(ok){if(window.CONectaDataReady) await window.CONectaDataReady; await loadSustentos();}}catch(e){console.error(e);gate(true);status('No se pudo conectar con Conecta Central: '+(e.message||e),false);}
   });
   sb.auth.onAuthStateChange(async()=>{try{await loadProfile();}catch(e){console.error(e);}});
 })();

@@ -2442,7 +2442,9 @@ window.CONectaDataReady = initPersistentData();
     DATA[idx]=y;
     try{
       if(!window.ConectaSupabase?.saveSustento) throw new Error('Conexión con Conecta Central no disponible.');
-      await window.ConectaSupabase.saveSustento(y.key,value,y.codigoTienda);
+      // Guardar con clave única por Pedido + Artículo + Fecha.
+      // Esto permite guardar varias líneas sin que una sobrescriba a otra.
+      await window.ConectaSupabase.saveSustento(smartMatchKey(y),value,y.codigoTienda);
       await dbPutRows([y]);
       const dias=dateDiffDays(y.fecha||getTodayISO(),y.fechaPref||y.fecha||getTodayISO());
       await saveSustentoHistory([{...y,diasVencidos:dias,vencimientoLabel:(dias>0?`${dias} días vencido`:dias===0?'Vence hoy':`Faltan ${Math.abs(dias)} días`)}],'Guardado individual desde visor');
@@ -2451,12 +2453,20 @@ window.CONectaDataReady = initPersistentData();
       tr.dataset.saved='1';
       if(btn){btn.disabled=true;btn.textContent='✓ Guardado';btn.classList.add('line-saved');}
       const st=document.getElementById('smartRouteStatus'); if(st) st.textContent='Sustento guardado correctamente.';
-      if(typeof render==='function') render();
+      // No llamar render(): ese render reconstruye el dashboard y borra el
+      // estado visual del SmartSheet. La fila ya quedó actualizada en pantalla.
     }catch(e){ alert('No se pudo guardar el sustento: '+e.message); }
   }
 
   function renderSmartSingle(){
     const body=document.getElementById('smartRouteRows'); if(!body) return;
+    // Preservar textos que el usuario todavía está escribiendo si una
+    // sincronización remota obliga a reconstruir la tabla.
+    const draftMap=new Map();
+    body.querySelectorAll('tr[data-key]').forEach(tr=>{
+      const ta=tr.querySelector('[data-sustento]');
+      if(ta && !ta.disabled) draftMap.set(String(tr.dataset.key||''),String(ta.value||''));
+    });
     body.innerHTML='';
     const allRows=(typeof smartSheetRows==='function'?smartSheetRows():[]);
     const p=window.ConectaSupabase?.getProfile?.();
@@ -2467,7 +2477,9 @@ window.CONectaDataReady = initPersistentData();
     const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     rows.forEach(x=>{
       const tr=document.createElement('tr'); tr.dataset.key=smartMatchKey(x);
-      const already=String(x.sustentoTienda||'').trim();
+      const rowKey=smartMatchKey(x);
+      const draft=String(draftMap.get(rowKey)||'').trim();
+      const already=String(x.sustentoTienda||'').trim() || draft;
       tr.innerHTML=`<td>${esc(x.pedido)}</td><td>${esc(x.articulo)}</td><td>${esc(x.region)}</td><td>${esc(x.tienda)}</td><td>${esc(x.cliente)}</td><td>${esc(x.fecha)}</td><td>${esc(x.fechaPref||'Sin fecha')}</td><td><span class="late-days">${esc(x.vencimientoLabel)}</span></td><td class="status-alert">Tarde HOY</td><td class="sustento-cell"><textarea data-sustento="1" placeholder="Ingrese el sustento de la tienda...">${esc(already)}</textarea><button type="button" class="line-save ${already?'line-saved':''}" ${already?'disabled':''}>${already?'✓ Guardado':'💾 Guardar'}</button></td>`;
       if(already) tr.querySelector('textarea').disabled=true;
       tr.querySelector('.line-save').addEventListener('click',()=>saveOneLine(tr));
@@ -2696,17 +2708,45 @@ body.role-viewer label[for="smartRouteFile"]{
     if(profile.role!=='admin' && profile.store_code) q=q.eq('store_code',profile.store_code);
     const {data,error}=await q;
     if(error) return;
-    const map=new Map((data||[]).map(r=>[String(r.order_key),r]));
+
+    // CLAVE ROBUSTA: Pedido + Artículo + Fecha.
+    // La versión anterior usaba solo x.key (Pedido + Artículo), lo que
+    // provocaba colisiones cuando el mismo pedido/artículo aparecía en
+    // distintas fechas y hacía que un sustento pareciera desaparecer.
+    const exactMap=new Map();
+    const legacyMap=new Map();
+    (data||[]).forEach(r=>{
+      const ok=String(r.order_key||'').trim();
+      if(!ok) return;
+      exactMap.set(ok,r);
+      const parts=ok.split('¦');
+      const legacy=parts.slice(0,2).join('¦');
+      if(legacy) legacyMap.set(legacy,r);
+    });
+
     let changed=false;
-    DATA=(DATA||[]).map(x=>{const r=map.get(String(x.key||''));if(!r)return x;const v=String(r.sustento||'');if(String(x.sustentoTienda||'')!==v){changed=true;return {...x,sustentoTienda:v};}return x;});
+    DATA=(DATA||[]).map(x=>{
+      const exactKey=smartMatchKey(x);
+      const legacyKey=String(x.key||'').trim();
+      const r=exactMap.get(exactKey) || legacyMap.get(exactKey) || legacyMap.get(legacyKey);
+      if(!r) return x;
+      const v=String(r.sustento||'').trim();
+      if(String(x.sustentoTienda||'')!==v){
+        changed=true;
+        return {...x,sustentoTienda:v};
+      }
+      return x;
+    });
+
     if(changed){
-      if(typeof render==='function') render();
-      // IMPORTANTE: el SmartSheet tiene su propio renderizado y no depende
-      // del render() general del dashboard. Actualizarlo después de recuperar
-      // sustentos evita que ADMIN vea la tabla vacía/antigua aunque Supabase
-      // ya tenga el dato guardado.
+      // En SmartSheet NO redibujar el dashboard completo: eso borraba
+      // lo que el VISOR estaba escribiendo y provocaba la sensación de
+      // que la información se eliminaba. Solo refrescamos la tabla de
+      // sustentos cuando estamos en esa ruta.
       if(location.hash.toLowerCase()==='#sustento' && typeof renderSmartSingle==='function'){
         renderSmartSingle();
+      }else if(typeof render==='function'){
+        render();
       }
     }
     return {count:(data||[]).length,changed};

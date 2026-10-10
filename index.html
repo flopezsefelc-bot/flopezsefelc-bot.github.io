@@ -646,12 +646,14 @@ tbody tr:hover{background:#f7fbfd}
 
 <style id="single-file-viewer-final">
 /* ===== VISOR ÚNICO: mismo dashboard maestro, sin alimentación/modificación ===== */
+body.single-viewer #downloadSustentoHistory{
+  display:none!important;
+}
 body.single-viewer #topUploadNav,
 body.single-viewer #uploadRoute,
 body.single-viewer #btnIrCarga,
 body.single-viewer #downloadSelection,
 body.single-viewer #importSmartSheet,
-body.single-viewer #downloadSustentoHistory,
 body.single-viewer #smartRouteFile,
 body.single-viewer label[for="smartRouteFile"]{
   display:none!important;
@@ -2192,30 +2194,65 @@ document.getElementById('copyViewerLink')?.addEventListener('click',async()=>{
 });
 document.getElementById('downloadSustentoHistory')?.addEventListener('click',async()=>{
  try{
-   const hist=await dbGetHistory();
-   if(!hist.length){ alert('Todavía no hay sustentos guardados en el histórico.'); return; }
-   hist.sort((a,b)=>String(b.fechaHora).localeCompare(String(a.fechaHora)));
-   const out=hist.map(x=>({
-     'Fecha de subida':x.fechaSubida,
-     'Hora de subida':x.fechaHora,
-     'Fecha del pedido':x.fechaPedido,
-     'Pedido':x.pedido,
-     'Artículo':x.articulo,
-     'Región':x.region,
-     'Tienda':x.tienda,
-     'Cliente':x.cliente,
-     'Fecha vencimiento':x.fechaVencimiento,
-     'Días vencidos':x.diasVencidos,
-     'Estado':x.estado,
-     'Sustento de Tienda':x.sustentoTienda,
-     'Origen':x.origen
-   }));
+   // IMPORTANTE: el histórico compartido debe salir de SUPABASE,
+   // no de IndexedDB/localStorage del navegador de cada usuario.
+   const role=String(document.body?.dataset?.conectaRole||'').trim().toLowerCase();
+   const isAdmin=role==='admin' || role==='administrador';
+   if(!isAdmin){
+     alert('Usuario sin permiso para descargar el histórico de sustentos.');
+     return;
+   }
+   const sbClient=window.CONECTA_SB;
+   if(!sbClient) throw new Error('Supabase todavía no está disponible.');
+   const {data,error}=await sbClient
+     .from('sustentos')
+     .select('order_key,sustento,store_code,updated_at,updated_by')
+     .order('updated_at',{ascending:false});
+   if(error) throw error;
+   if(!data || !data.length){
+     alert('Todavía no hay sustentos guardados en Supabase.');
+     return;
+   }
+
+   const out=data.map(x=>{
+     const parts=String(x.order_key||'').split('¦');
+     return {
+       'Fecha de actualización':x.updated_at ? new Date(x.updated_at).toLocaleDateString('es-PE') : '',
+       'Hora de actualización':x.updated_at ? new Date(x.updated_at).toLocaleTimeString('es-PE') : '',
+       'Fecha del pedido':parts[2]||'',
+       'Pedido':parts[0]||'',
+       'Artículo':parts[1]||'',
+       'Código Tienda':x.store_code||'',
+       'Sustento de Tienda':x.sustento||'',
+       'Usuario que actualizó':x.updated_by||''
+     };
+   });
+
    const ws=XLSX.utils.json_to_sheet(out);
    const wb=XLSX.utils.book_new();
-   XLSX.utils.book_append_sheet(wb,ws,'HISTORICO SUSTENTOS');
-   ws['!cols']=[{wch:16},{wch:22},{wch:16},{wch:18},{wch:22},{wch:14},{wch:30},{wch:38},{wch:20},{wch:15},{wch:20},{wch:65},{wch:22}];
-   XLSX.writeFile(wb,'HISTORICO_SUSTENTOS_TIENDA.xlsx');
- }catch(err){console.error(err);alert('No se pudo generar el histórico: '+err.message);}
+   XLSX.utils.book_append_sheet(wb,ws,'SUSTENTOS SUPABASE');
+   ws['!cols']=[
+     {wch:22},{wch:22},{wch:18},{wch:18},{wch:22},{wch:16},{wch:65},{wch:38}
+   ];
+   const fileName=`HISTORICO_SUSTENTOS_TIENDA_${getTodayISO()}.xlsx`;
+   try{
+     XLSX.writeFile(wb,fileName);
+   }catch(writeErr){
+     console.warn('XLSX.writeFile no pudo iniciar la descarga; usando descarga alternativa.',writeErr);
+     const arrayBuffer=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+     const blob=new Blob([arrayBuffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+     const a=document.createElement('a');
+     a.href=URL.createObjectURL(blob);
+     a.download=fileName;
+     document.body.appendChild(a);
+     a.click();
+     setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+   }
+   alert(`Descarga completada. Se exportaron ${out.length} sustentos guardados en Supabase.`);
+ }catch(err){
+   console.error(err);
+   alert('No se pudo generar el histórico desde Supabase: '+(err?.message||err));
+ }
 });
 
 downloadSelection.addEventListener('click',()=>{
@@ -2865,4 +2902,17 @@ body.role-admin #smartRouteFile,body.role-admin label[for="smartRouteFile"]{disp
  document.addEventListener('DOMContentLoaded',bind);
 })();
 </script>
+
+<style id="historico-admin-visible-final">
+/* ===== HISTORICO DE SUSTENTOS: SOLO ADMIN ===== */
+body.role-viewer #downloadSustentoHistory,
+body.role-viewer.single-viewer #downloadSustentoHistory{
+  display:none!important;
+}
+body.role-admin #downloadSustentoHistory,
+body.role-admin.single-viewer #downloadSustentoHistory{
+  display:inline-flex!important;
+  visibility:visible!important;
+}
+</style>
 </html>
